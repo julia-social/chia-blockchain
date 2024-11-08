@@ -207,8 +207,7 @@ def tx_endpoint(
             new_txs = action_scope.side_effects.transactions
             if "transaction" in response:
                 if (
-                    func.__name__ == "create_new_wallet"
-                    and request["wallet_type"] == "pool_wallet"
+                    (func.__name__ == "create_new_wallet" and request["wallet_type"] == "pool_wallet")
                     or func.__name__ == "pw_join_pool"
                     or func.__name__ == "pw_self_pool"
                     or func.__name__ == "pw_absorb_rewards"

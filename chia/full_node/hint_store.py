@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from typing import List, Set, Tuple
+from typing import List, Set, Tuple, Dict
 
 import typing_extensions
 
@@ -55,6 +55,26 @@ class HintStore:
                 await cursor.close()
 
         return coin_ids
+
+    async def get_hints_for_coin_ids(self, coin_ids: List[bytes32]) -> Dict[bytes32, bytes]:
+        coin_ids = list(coin_ids)
+        if len(coin_ids) == 0:
+            return {}
+        coin_id_hint_dict = dict()
+        async with self.db_wrapper.reader_no_transaction() as conn:
+            for batch in to_batches(coin_ids, SQLITE_MAX_VARIABLE_NUMBER):
+                coin_ids_db: Tuple[bytes32, ...] = tuple(batch.entries)
+                cursor = await conn.execute(
+                    f'SELECT coin_id, hint from hints WHERE coin_id IN ({"?," * (len(batch.entries) - 1)}?)',
+                    coin_ids_db,
+                )
+                rows = await cursor.fetchall()
+                for row in rows:
+                    if len(row[1]) == 32:
+                        coin_id_hint_dict[row[0]] = bytes32(row[1])
+                await cursor.close()
+        return coin_id_hint_dict
+
 
     async def get_hints(self, coin_ids: List[bytes32]) -> List[bytes32]:
         hints: List[bytes32] = []

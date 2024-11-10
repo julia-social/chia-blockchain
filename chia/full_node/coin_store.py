@@ -644,3 +644,112 @@ class CoinStore:
                     parent_amount=uint64(int_from_bytes(parent_amount)),
                     parent_parent_id=bytes32(parent_parent_id),
                 )
+
+
+    async def get_coin_records_by_hints_paginated(
+            self,
+            include_spent_coins: bool,
+            hints: List[bytes32],
+            page_size: int,
+            last_id: Optional[bytes32] = None,
+            start_height: uint32 = uint32(0),
+            end_height: uint32 = uint32((2 ** 32) - 1),
+    ) -> Tuple[List[CoinRecord], Optional[bytes32], Optional[int]]:
+        if len(hints) == 0:
+            return []
+        hints_db = tuple(hints)
+        search_and_sort_query = (
+            f"SELECT confirmed_index, spent_index, coinbase, puzzle_hash, "
+            f"coin_parent, amount, timestamp FROM hints INNER JOIN coin_record ON hints.hint in ({'?,' * (len(hints) - 1)}?) "
+            f'AND hints.coin_id = coin_record.coin_name '
+            f"WHERE +confirmed_index>=? AND +confirmed_index<? "
+            f"{'' if include_spent_coins else 'AND +spent_index=0'} "
+            f"{'AND coin_name > ?' if last_id is not None else ''} "
+            f"ORDER BY hints.coin_id "
+            f"LIMIT {page_size}"
+        )
+        params = hints_db + (start_height, end_height)
+        if last_id is not None:
+            params += (last_id,)
+        async with self.db_wrapper.reader_no_transaction() as conn:
+            coins = []
+            next_last_id = last_id
+            async with conn.execute(
+                    search_and_sort_query,
+                    params,
+            ) as cursor:
+                for row in await cursor.fetchall():
+                    coin = self.row_to_coin(row)
+                    coins.append(CoinRecord(coin, row[0], row[1], row[2], row[6]))
+
+                if len(coins) > 0:
+                    next_last_id = coins[len(coins) - 1].coin.name()
+
+            return coins, next_last_id, None
+
+    async def get_coin_records_by_puzzle_hashes_paginated(
+            self,
+            include_spent_coins: bool,
+            puzzle_hashes: List[bytes32],
+            page_size: int,
+            last_id: Optional[bytes32] = None,
+            start_height: uint32 = uint32(0),
+            end_height: uint32 = uint32((2 ** 32) - 1),
+    ) -> Tuple[List[CoinRecord], Optional[bytes32], Optional[int]]:
+        if len(puzzle_hashes) == 0:
+            return []
+
+        puzzle_hashes_db: Tuple[Any, ...]
+        if self.db_wrapper.db_version == 2:
+            puzzle_hashes_db = tuple(puzzle_hashes)
+        else:
+            puzzle_hashes_db = tuple([ph.hex() for ph in puzzle_hashes])
+        count_query = (
+            "SELECT COUNT(*) as coin_count "
+            "FROM coin_record INDEXED BY coin_puzzle_hash "
+            f'WHERE puzzle_hash in ({"?," * (len(puzzle_hashes) - 1)}?) '
+            f"AND confirmed_index>=? AND confirmed_index<?"
+        )
+        count_query_params = puzzle_hashes_db+ (start_height, end_height)
+        query = (
+            f"SELECT confirmed_index, spent_index, coinbase, puzzle_hash, "
+            f"coin_parent, amount, timestamp FROM coin_record INDEXED BY coin_puzzle_hash "
+            f'WHERE puzzle_hash in ({"?," * (len(puzzle_hashes) - 1)}?) '
+            f"AND confirmed_index>=? AND confirmed_index<? "
+            f"{'' if include_spent_coins else 'AND spent_index=0'} "
+            f"{'AND coin_name > ?' if last_id is not None else ''} "
+            f"ORDER BY coin_name "
+            f"LIMIT {page_size}"
+        )
+        params = puzzle_hashes_db + (start_height, end_height)
+        if last_id is not None:
+            params += (last_id,)
+
+        async with self.db_wrapper.reader_no_transaction() as conn:
+            total_coin_count = None
+            if last_id is None:
+                async with conn.execute(
+                        count_query,
+                        count_query_params,
+                ) as cursor:
+                    count_row =  await cursor.fetchone()
+                    total_coin_count = count_row[0]
+
+                    if total_coin_count == 0:
+                        return [], None, total_coin_count
+
+            coins = []
+            next_last_id = last_id
+
+            async with conn.execute(
+                    query,
+                    params,
+            ) as cursor:
+                for row in await cursor.fetchall():
+                    coin = self.row_to_coin(row)
+                    coins.append(CoinRecord(coin, row[0], row[1], row[2], row[6]))
+
+                if len(coins) > 0:
+                    next_last_id = coins[len(coins) - 1].coin.name()
+
+            return coins, next_last_id, total_coin_count
